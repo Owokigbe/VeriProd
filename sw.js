@@ -1,7 +1,7 @@
 /* Veriprod service worker: lets the app open with no data connection.
    Network first, so a phone that is online always gets the newest version;
    the cached copy is only used when the network cannot be reached. */
-const CACHE = "veriprod-v1";
+const CACHE = "veriprod-v2";
 const SHELL = [
   "./", "index.html", "app.css", "app.js", "manifest.webmanifest",
   "vendor/jsqr/jsQR.js", "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
