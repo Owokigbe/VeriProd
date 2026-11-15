@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Veriprod test packs</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: a printable sheet of pack labels in a wrapping grid, one QR per label. */
+:root{ --bg:#f3f5f2; --surface:#ffffff; --ink:#14201b; --muted:#5b6a62; --line:#d5ddd6; --brand:#0d5c46;
+  --good:#1d7a3e; --good-soft:#e1f4e6; --warn:#a35c00; --warn-soft:#fdf0d9; --bad:#b4291c; --bad-soft:#fbe4e0;
+  --f-display:"Bricolage Grotesque","Segoe UI",system-ui,sans-serif; --f-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace }
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --bg:#0e1512; --surface:#16201b; --ink:#e7efe9; --muted:#9db0a5; --line:#2a3a32; --brand:#3fbf8f;
+  --good:#5fd18a; --good-soft:#163522; --warn:#f0b257; --warn-soft:#3a2a10; --bad:#ff8a7a; --bad-soft:#3d1813; color-scheme:dark } }
+:root[data-theme="dark"]{ --bg:#0e1512; --surface:#16201b; --ink:#e7efe9; --muted:#9db0a5; --line:#2a3a32; --brand:#3fbf8f;
+  --good:#5fd18a; --good-soft:#163522; --warn:#f0b257; --warn-soft:#3a2a10; --bad:#ff8a7a; --bad-soft:#3d1813; color-scheme:dark }
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
+.wrap{max-width:1000px;margin:0 auto;padding-block:28px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:22px}
+h1{font-family:var(--f-display);font-weight:800;font-size:2rem;line-height:1.1;margin:0;text-wrap:balance}
+p{margin:0;max-width:65ch} .muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
+.pack{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;align-items:center;text-align:center;min-width:0}
+.pack canvas{width:220px;height:220px;max-width:100%;background:#fff;border-radius:8px;image-rendering:pixelated}
+.nm{font-weight:600;line-height:1.3}
+.code{font-family:var(--f-mono);letter-spacing:.06em;font-size:1rem;user-select:all}
+.chip{display:inline-block;border-radius:999px;padding:3px 12px;font-size:.8rem;font-weight:600}
+.chip.good{background:var(--good-soft);color:var(--good)} .chip.warn{background:var(--warn-soft);color:var(--warn)} .chip.bad{background:var(--bad-soft);color:var(--bad)}
+button{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-weight:600;cursor:pointer}
+button:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <h1>Veriprod test packs</h1>
+    <p><a href="./" style="color:var(--brand);font-weight:600">Open the Veriprod app</a></p>
+    <p class="muted">Example pack codes for testing the Veriprod app. Open this page on one screen and scan a code with the app on your phone, or type the code under it. Every brand and product here is made up.</p>
+  </header>
+  <div class="grid" id="grid"></div>
+</div>
+<script src="vendor/qrcode-generator/qrcode.js"></script>
+<script>
+(function(){
+const ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function sig(body){ let h = 2166136261; const s = "veriprod-demo-key:" + body;
+  for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  let out=""; for (let i=0;i<4;i++){ out += ALPH[h % 32]; h = Math.floor(h/32) ^ (h<<7>>>0); h>>>=0; } return out; }
+const pretty = c => c.slice(0,4)+"-"+c.slice(4,8)+"-"+c.slice(8,12);
+const PACKS = [
+  {body:"KP7Q2M4X", name:"Paracetamol 500mg tablets, 96 pack", expect:"Genuine", cls:"good"},
+  {body:"LF3H8N2C", name:"Golden Start infant formula 400g", expect:"Genuine", cls:"good"},
+  {body:"ZD2K6W8P", name:"Malt Gold 330ml, 6 pack", expect:"Genuine", cls:"good"},
+  {body:"HB5T9R1D", name:"Shea butter body lotion 400ml", expect:"Genuine", cls:"good"},
+  {body:"HB1X7Y3E", name:"Shea butter body lotion 400ml", expect:"Likely clone (code copied)", cls:"bad"},
+  {body:"KP9V3L7A", name:"Paracetamol 500mg tablets, 96 pack", expect:"Fake (never activated)", cls:"bad"},
+  {code:"ZD9W4M7KQ8RT", name:"Unbranded malt drink", expect:"Fake (never issued)", cls:"bad"},
+  {body:"LF8M4Q6Z", name:"Golden Start infant formula 400g", expect:"Warning (recalled batch)", cls:"warn"},
+  {body:"KA4C8T2B", name:"Amoxicillin 500mg capsules, 21 pack", expect:"Warning (expired)", cls:"warn"}
+].map(p => Object.assign(p, {code: p.code || p.body + sig(p.body)}));
+const grid = document.getElementById("grid");
+PACKS.forEach((p, i) => {
+  const d = document.createElement("div"); d.className = "pack";
+  d.innerHTML = '<canvas width="330" height="330" aria-label="QR code for ' + pretty(p.code) + '"></canvas><div class="nm"></div><div class="code"></div><span class="chip ' + p.cls + '"></span><button type="button">Copy code</button>';
+  d.querySelector(".nm").textContent = p.name; d.querySelector(".code").textContent = pretty(p.code); d.querySelector(".chip").textContent = "Expect: " + p.expect;
+  const btn = d.querySelector("button");
+  btn.onclick = () => { const done = () => { btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy code", 1500); };
+    const fallback = () => { const r = document.createRange(); r.selectNodeContents(d.querySelector(".code")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected. Copy it now"; };
+    try { navigator.clipboard.writeText(p.code).then(done, fallback); } catch(e){ fallback(); } };
+  grid.appendChild(d);
+  if (typeof qrcode !== "function") return;
+  const q = qrcode(0, "M"); q.addData("VP1:" + p.code, "Alphanumeric"); q.make();
+  const cv = d.querySelector("canvas"), ctx = cv.getContext("2d"), n = q.getModuleCount(), cell = Math.floor(cv.width / (n + 8)), off = Math.floor((cv.width - cell*n)/2);
+  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,cv.width,cv.height); ctx.fillStyle = "#000";
+  for (let r=0;r<n;r++) for (let c=0;c<n;c++) if (q.isDark(r,c)) ctx.fillRect(off+c*cell, off+r*cell, cell, cell);
+});
+})();
+</script>
+</body>
+</html>
