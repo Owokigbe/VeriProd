@@ -33,6 +33,7 @@ const PACKS = {
           recalled:"Batch LF-2311 was recalled on 4 Nov 2026 for a quality check. Do not feed it to a baby."},
   KA4C8T:{p:"P5", size:10, batch:"KP-2503", mfg:"2025-03-01", exp:"2026-03-01", active:true, source:"brand"}
 };
+const PRICE = {individual:500, business:2000};
 const FREE_SCANS = 3, CLONE_LIMIT = 5, REWARD_POINTS = 20, MONTHLY_REWARD_CAP = 10, REDEEM_AT = 200;
 const KM_PER_MI = 1.609344, RADIUS_MIN = 5, RADIUS_MAX = 100, RADIUS_MAX_KM = 160, RADIUS_DEFAULT = 20, WINDOW_DAYS = 90, DAY = 86400000;
 
@@ -103,7 +104,7 @@ function parseCode(code){
 }
 
 /* ---------- state ---------- */
-const BLANK = () => ({ plan:"free", scansUsed:0, points:0, rewardedSerials:[], rewardsThisMonth:0, accountType:"individual", biz:null,
+const BLANK = () => ({ plan:"free", scansUsed:0, bizPlan:"free", bizScansUsed:0, points:0, rewardedSerials:[], rewardsThisMonth:0, accountType:"individual", biz:null,
   home:null, locMode:null, radiusMi:RADIUS_DEFAULT, redeemed:[] });
 const S = { tab:"scan", result:null, profile:BLANK(), myScans:[], myReports:[], reports:[], deliveries:[], delivery:null, doneDelivery:null,
   loc:null, liveCam:false, camOn:false, hotSort:"near", photoCb:null };
@@ -157,26 +158,32 @@ let adI = 0; function rotateAd(){ const el = $("#adMsg"); el.style.opacity=0; se
 rotateAd(); setInterval(rotateAd, 7000);
 
 /* ---------- location: live when allowed, a chosen spot otherwise ---------- */
-let watchId = null, lastDrawn = null;
+let watchIds = [], lastDrawn = null, fineAt = 0;
 const here = () => S.loc || S.profile.home || null;
 const kmOf = mi => Math.min(RADIUS_MAX_KM, mi * KM_PER_MI);
 const radiusKm = () => kmOf(S.profile.radiusMi);
 const radiusLabel = mi => mi + " miles (" + Math.round(kmOf(mi)) + " km)";
+/* one position for a pin: try GPS first, then the quicker network position */
 function locate(){ return new Promise((res, rej) => {
   if (S.loc) return res({lat:S.loc.lat, lng:S.loc.lng});
   if (!navigator.geolocation) return rej(new Error("unsupported"));
-  const t = setTimeout(()=>rej(new Error("timeout")), 12000);
-  try { navigator.geolocation.getCurrentPosition(p => { clearTimeout(t); res({lat:p.coords.latitude, lng:p.coords.longitude}); },
-    e => { clearTimeout(t); rej(e); }, {enableHighAccuracy:true, timeout:11000, maximumAge:60000}); } catch(e){ clearTimeout(t); rej(e); }
+  const ok = p => res({lat:p.coords.latitude, lng:p.coords.longitude});
+  try { navigator.geolocation.getCurrentPosition(ok, e => { if (e && e.code === 1) return rej(e);
+      navigator.geolocation.getCurrentPosition(ok, rej, {enableHighAccuracy:false, timeout:12000, maximumAge:300000}); },
+    {enableHighAccuracy:true, timeout:9000, maximumAge:60000}); } catch(e){ rej(e); }
 }); }
 function setHome(lat,lng){ S.profile.home = {lat, lng, area: areaName(lat,lng)}; saveProfile(); }
-function stopLive(){ if (watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); watchId = null; S.loc = null; }
+function stopLive(){ if (navigator.geolocation) watchIds.forEach(id => navigator.geolocation.clearWatch(id)); watchIds = []; S.loc = null; }
+/* Two watchers run side by side: the network position arrives fast and works indoors,
+   GPS is slower but sharper and takes over when it has a fix. */
 function startLive(byUser){
-  if (!navigator.geolocation){ if (byUser){ toast("This phone can't share its location. Set your area on the map."); openHomePicker(); } return; }
-  if (watchId != null) return;
+  if (!navigator.geolocation){ if (byUser){ toast("This browser can't share its location. Set your area on the map."); openHomePicker(); } return; }
+  if (watchIds.length){ if (byUser) toast(S.loc ? "Live location is on: " + S.loc.area : "Still finding your location…"); return; }
   if (byUser) toast("Finding your location…");
-  let first = true;
-  watchId = navigator.geolocation.watchPosition(p => {
+  let first = true, dead = false; const failed = {};
+  const onPos = fine => p => {
+    if (dead) return;
+    if (fine) fineAt = Date.now(); else if (Date.now() - fineAt < 60000) return;
     const lat = p.coords.latitude, lng = p.coords.longitude;
     S.loc = {lat, lng, area: areaName(lat,lng), at: Date.now()};
     const h = S.profile.home;
@@ -185,14 +192,41 @@ function startLive(byUser){
     if (first || moved){ lastDrawn = {lat,lng}; onLocationChange(first); }
     if (first && byUser) toast("Live location on: " + S.loc.area);
     first = false;
-  }, err => {
+  };
+  const onErr = fine => err => {
+    if (dead) return;
     const denied = err && err.code === 1;
-    if (!denied && !first) return;                      // a passing glitch after a good fix: keep watching
-    stopLive();
+    if (!denied){ failed[fine] = true; if (!first || !(failed[true] && failed[false])) return; }   // wait for the other watcher, or keep going after a good fix
+    dead = true; stopLive();
     if (denied){ S.profile.locMode = S.profile.home ? "manual" : null; saveProfile(); }
-    if (byUser){ toast(err && err.code === 1 ? "Location is blocked for this site. Set your area on the map." : "Your location couldn't be found. Set your area on the map."); openHomePicker(); }
+    if (byUser){ if (denied) openLocationHelp(); else { toast("Your location couldn't be found. Check that Location is on in your phone's settings, or set your area on the map."); openHomePicker(); } }
     else if (!document.querySelector(".overlay") && !S.camOn) render();
-  }, {enableHighAccuracy:true, maximumAge:30000, timeout:20000});
+  };
+  fineAt = 0;
+  watchIds = [navigator.geolocation.watchPosition(onPos(false), onErr(false), {enableHighAccuracy:false, maximumAge:120000, timeout:25000}),
+              navigator.geolocation.watchPosition(onPos(true), onErr(true), {enableHighAccuracy:true, maximumAge:30000, timeout:25000})];
+}
+/* shown when the browser refuses: the app cannot ask again, so the person has to unblock it */
+function openLocationHelp(){
+  document.querySelectorAll(".overlay").forEach(x => x.close && x.close());
+  const ua = navigator.userAgent || "", ios = /iPhone|iPad|iPod/i.test(ua), android = /Android/i.test(ua);
+  const iosSteps = `<li><span class="dot p">1</span><span>Open your iPhone's <b>Settings</b>, then <b>Privacy &amp; Security</b>, then <b>Location Services</b>, and switch it on.</span></li>
+      <li><span class="dot p">2</span><span>In the same list tap <b>Safari Websites</b> (or the browser you use) and choose <b>While Using the App</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here, tap <b>Try again</b> and choose <b>Allow</b>.</span></li>`;
+  const androidSteps = `<li><span class="dot p">1</span><span>Swipe down from the top of your phone and switch <b>Location</b> on.</span></li>
+      <li><span class="dot p">2</span><span>Tap the icon at the left of the address bar, then <b>Permissions</b>, then <b>Location</b>, and choose <b>Allow</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here and tap <b>Try again</b>.</span></li>`;
+  const otherSteps = `<li><span class="dot p">1</span><span>Make sure Location is switched on for this device.</span></li>
+      <li><span class="dot p">2</span><span>Click the icon at the left of the address bar, find <b>Location</b> and set it to <b>Allow</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here and choose <b>Try again</b>.</span></li>`;
+  const o = sheet(`<h2>Location is blocked</h2>
+    <p class="small muted">Your browser is not letting Veriprod see where you are. This happens when "Block" or "Don't allow" was chosen before, or when Location is switched off on the phone. Veriprod can't ask again until it is unblocked.</p>
+    <ul class="checks">${ios ? iosSteps : android ? androidSteps : otherSteps}</ul>
+    <p class="notice">Opened Veriprod from inside another app, such as WhatsApp or Instagram? Open it in Chrome or Safari instead. Browsers built into other apps often can't share location.</p>
+    <button class="btn primary block" id="locRetry">Try again</button>
+    <button class="btn ghost block" id="locManual">Set my area on the map instead</button>`);
+  o.querySelector("#locRetry").onclick = () => { o.close(); startLive(true); };
+  o.querySelector("#locManual").onclick = () => { o.close(); openHomePicker(); };
 }
 function onLocationChange(first){
   if (document.querySelector(".overlay") || S.camOn) return;
@@ -267,7 +301,12 @@ function verify(code){
   return Object.assign(base, {status:"genuine", title:"GENUINE", sub});
 }
 function locFields(){ const h = here(); return h ? {lat:+h.lat.toFixed(2), lng:+h.lng.toFixed(2), area:h.area || areaName(h.lat,h.lng), city:cityOf(h.lat,h.lng)} : {lat:null, lng:null, area:null, city:null}; }
-function canScan(){ const P = S.profile; return P.plan === "active" || P.scansUsed < FREE_SCANS; }
+/* shoppers and businesses each have their own plan and their own free scans */
+const planKey = () => isBiz() ? "bizPlan" : "plan", usedKey = () => isBiz() ? "bizScansUsed" : "scansUsed";
+const subscribed = () => S.profile[planKey()] === "active";
+const scansLeft = () => Math.max(0, FREE_SCANS - (S.profile[usedKey()] || 0));
+const price = () => isBiz() ? PRICE.business : PRICE.individual;
+function canScan(){ return subscribed() || scansLeft() > 0; }
 /* check a code and log it; returns the result, or null when the free scans are used up */
 function checkCode(raw, how, extra){
   const code = normalize(raw);
@@ -275,7 +314,7 @@ function checkCode(raw, how, extra){
   if (!canScan()){ openPaywall(); return null; }
   const P = S.profile, r = verify(code);
   r.how = how; r.at = Date.now(); r.id = rid();
-  if (P.plan !== "active") P.scansUsed++;
+  if (!subscribed()) P[usedKey()] = (P[usedKey()] || 0) + 1;
   saveProfile();
   S.myScans.unshift(Object.assign({id:r.id, code, status:r.status, productId: r.pk ? r.pk.p : null, brand: r.product ? r.product.brand : null,
     pack: r.prefix || null, item: r.item || 0, at:r.at, how, accountType:P.accountType, answer:null, stocked:false}, locFields(), extra || {}));
@@ -283,13 +322,14 @@ function checkCode(raw, how, extra){
   return r;
 }
 function runScan(raw, how){
-  const r = checkCode(raw, how); if (!r) return;
+  const r = checkCode(raw, how);
+  if (!r){ if (how === "qr") render(); return; }        // put the scan window back, never leave a frozen camera frame
   S.result = r; S.tab = "result"; render(); window.scrollTo(0,0);
 }
 function renderPlanChip(){
   const P = S.profile, c = $("#planChip");
-  if (P.plan === "active"){ c.className="chip ok"; c.textContent = "Subscribed"; }
-  else { const left = Math.max(0, FREE_SCANS - P.scansUsed); c.className = "chip" + (left ? "" : " warn"); c.textContent = plural(left, "free scan") + " left"; }
+  if (subscribed()){ c.className="chip ok"; c.textContent = "Subscribed"; }
+  else { const left = scansLeft(); c.className = "chip" + (left ? "" : " warn"); c.textContent = plural(left, "free scan") + " left"; }
 }
 
 /* ---------- camera scanning ---------- */
@@ -346,7 +386,11 @@ async function scanFrame(){
     if (cam.continuous){
       if (found === cam.last && Date.now() - cam.lastAt < 3500) return;
       cam.last = found; cam.lastAt = Date.now(); cb(found);
-    } else { stopCam(); cb(found); }
+    } else {
+      if (normalize(found).length < 8){                 // some other QR code: say so and keep looking
+        if (found !== cam.last || Date.now() - cam.lastAt > 4000){ cam.last = found; cam.lastAt = Date.now(); toast("That QR code is not a Veriprod code. Look for the Veriprod QR on the pack."); }
+        return; }
+      stopCam(); cb(found); }
   } finally { cam.busy = false; }
 }
 /* decode a QR from a photo: native detector first, then jsQR at several sizes and crops */
@@ -563,7 +607,7 @@ function bizStats(){
 
 /* ---------- views ---------- */
 function locationNudge(){
-  if (here()) return "";
+  if (here() || isBiz()) return "";
   return `<section class="card" aria-labelledby="h-loc"><h3 id="h-loc">Turn on your location</h3>
     <p class="small muted">Veriprod uses it to warn you about fakes reported near you and to tag your scans with a rough area.</p>
     <div class="row"><button class="btn primary" id="useGps">${ICON.pin} Turn on location</button><button class="btn ghost" id="pickHome">Set it on the map</button></div></section>`;
@@ -574,7 +618,8 @@ function vScan(){
   let top = "";
   if (biz){ const b = bizStats();
     top = `<section class="card" aria-labelledby="h-biz">
-      <div><h2 id="h-biz">${esc(P.biz ? P.biz.name : "Your business")}</h2><p class="small muted">${esc(P.biz ? P.biz.type : "Business")}${here() ? " · " + esc(cap(here().area || "")) : ""}</p></div>
+      <div><h2 id="h-biz">${esc(P.biz ? P.biz.name : "Your business")}</h2><p class="small muted">${esc(P.biz ? P.biz.type : "Business")}${P.biz && P.biz.cac ? " · " + esc(P.biz.cac) : ""}</p></div>
+      <div>${verChip()}</div>
       <div class="kpis"><div class="kpi"><div class="n">${b.items}</div><div class="l">Items checked, 30 days</div></div>
         <div class="kpi"><div class="n" style="color:${b.flagged ? "var(--bad)" : "inherit"}">${b.flagged}</div><div class="l">Codes flagged</div></div>
         <div class="kpi"><div class="n">${b.deliveries}</div><div class="l">Deliveries</div></div></div>
@@ -785,22 +830,23 @@ function vAccount(){
   const P = S.profile, h = here(), live = !!S.loc;
   return `<h2>Account</h2>
   <section class="card"><h3>Subscription</h3>
-    ${P.plan==="active" ? `<p><span class="chip ok">Active</span> Unlimited scans for ${naira(500)} a month.</p><button class="btn ghost" id="cancelSub">Cancel subscription</button>`
-     : `<p>${Math.max(0,FREE_SCANS-P.scansUsed)} of ${FREE_SCANS} free scans left.</p><button class="btn primary" id="openPay">Subscribe for ${naira(500)} a month</button>`}
+    ${subscribed() ? `<p><span class="chip ok">Active</span> ${isBiz() ? "Business plan: unlimited delivery and item checks" : "Unlimited scans"} for ${naira(price())} a month.</p><button class="btn ghost" id="cancelSub">Cancel subscription</button>`
+     : `<p>${scansLeft()} of ${FREE_SCANS} free scans left.${isBiz() ? " The business plan covers every delivery and item check." : ""}</p><button class="btn primary" id="openPay">Subscribe for ${naira(price())} a month</button>`}
   </section>
   <section class="card"><h3>Account type</h3>
     <div class="seg" role="group" aria-label="Account type">
       <button data-acct="individual" aria-pressed="${P.accountType==="individual"}">Individual</button>
       <button data-acct="business" aria-pressed="${P.accountType==="business"}">Business</button></div>
-    ${isBiz() ? `<p class="small muted"><b>${esc(P.biz ? P.biz.name : "")}</b>${P.biz ? " · " + esc(P.biz.type) : ""}. Check deliveries, keep a stock record and report suppliers. Business scans don't earn rewards.</p>
+    ${isBiz() ? `<p class="small muted"><b>${esc(P.biz ? P.biz.name : "")}</b>${P.biz ? " · " + esc(P.biz.type) + " · CAC " + esc(P.biz.cac || "") : ""}. Check deliveries, keep a stock record and report suppliers. Business scans don't earn rewards.</p>
         <button class="btn ghost" id="editBiz">Edit business details</button>`
       : `<p class="small muted">For shoppers checking before they buy. Earn rewards for answering a question after a scan. Shops, pharmacies and distributors should switch to Business.</p>`}
   </section>
+  ${isBiz() ? verCard() : ""}
   <section class="card"><h3>My location</h3>
-    <p class="small muted">${live ? `<span class="livedot" aria-hidden="true"></span>Live location is on: <b>${esc(h.area)}</b>.` : h ? `Set to <b>${esc(h.area)}</b>.` : "Not set."} It is used for hotspots near you. Scans send only a rough area.</p>
+    <p class="small muted">${live ? `<span class="livedot" aria-hidden="true"></span>Live location is on: <b>${esc(h.area)}</b>.` : h ? `Set to <b>${esc(h.area)}</b>.` : "Not set."} ${isBiz() ? "It tags your checks and reports with your shop's area." : "It is used for hotspots near you."} Scans send only a rough area.</p>
     <div class="row">${live ? `<button class="btn ghost" id="pickHome">Use a fixed spot instead</button>` : `<button class="btn ghost" id="useGps">Use live location</button><button class="btn ghost" id="pickHome">Set it on the map</button>`}</div></section>
   <section class="card"><h3>About</h3>
-    <p class="small muted">Veriprod is a prototype. The brands, products, codes and hotspots shown are test data. Payments, airtime, USSD and NAFDAC reports are simulated.</p>
+    <p class="small muted">Veriprod is a prototype. The brands, products, codes and hotspots shown are test data. Payments, airtime, USSD, NAFDAC reports and inspection bookings are simulated.</p>
     <button class="btn ghost" id="resetData">Reset my data on this app</button></section>`;
 }
 
@@ -809,13 +855,14 @@ function sheet(html){ const o = document.createElement("div"); o.className="over
   o.close = () => { if (o.onclose) o.onclose(); o.remove(); };
   o.addEventListener("click", e => { if (e.target === o || e.target.closest("[data-close]")) o.close(); }); document.body.appendChild(o); return o; }
 function openPaywall(){
-  const o = sheet(`<h2>Keep checking for ${naira(500)} a month</h2>
-    <p class="muted">You've used your ${FREE_SCANS} free scans. Subscribe for unlimited checks on every partner product.</p>
+  if (document.querySelector("#confirmPay")) return;
+  const o = sheet(`<h2>You've used your ${FREE_SCANS} free scans</h2>
+    <p class="muted">${isBiz() ? `The business plan is ${naira(price())} a month for unlimited delivery and item checks.` : `Keep checking for ${naira(price())} a month, with unlimited checks on every partner product.`}</p>
     <ul class="checks"><li><span class="dot p">✓</span><span>Unlimited QR, typed and USSD checks</span></li><li><span class="dot p">✓</span><span>${isBiz() ? "Check whole deliveries and keep a stock record" : "Earn airtime and data for quick questions"}</span></li><li><span class="dot p">✓</span><span>Report fakes straight to brands and NAFDAC</span></li></ul>
     <label class="field" for="payMethod">Pay with<select id="payMethod"><option>Card</option><option>Bank transfer</option><option>Airtime</option></select></label>
-    <button class="btn primary block" id="confirmPay">Pay ${naira(500)} (simulated, no charge)</button>
+    <button class="btn primary block" id="confirmPay">Pay ${naira(price())} (simulated, no charge)</button>
     <button class="btn ghost block" data-close>Not now</button>`);
-  o.querySelector("#confirmPay").onclick = () => { S.profile.plan = "active"; saveProfile(); o.close(); toast("Subscribed. Unlimited scans unlocked."); if (S.tab !== "delivery") render(); };
+  o.querySelector("#confirmPay").onclick = () => { S.profile[planKey()] = "active"; saveProfile(); o.close(); toast("Subscribed. Unlimited scans unlocked."); if (S.tab !== "delivery") render(); };
 }
 function openHomePicker(){
   if (document.querySelector("#homeMap")) return;
@@ -829,18 +876,84 @@ function openHomePicker(){
   o.querySelector("#saveHome").onclick = () => { const p = pc.get(); if (!p){ o.querySelector("#homeErr").hidden = false; return; }
     stopLive(); S.profile.locMode = "manual"; setHome(p.lat, p.lng); o.close(); toast("Location set: " + S.profile.home.area); render(); };
 }
+/* CAC numbers: RC for companies, BN for business names, IT for incorporated trustees, then the digits */
+function cleanCac(v){ const m = String(v||"").toUpperCase().replace(/[\s.\-\/]/g,"").match(/^(RC|BN|IT)?(\d{4,8})$/); return m ? (m[1] || "RC") + " " + m[2] : null; }
 function openBizSetup(){
-  const b = S.profile.biz || {name:"", type:"Pharmacy"}, types = ["Pharmacy","Supermarket","Shop or kiosk","Distributor or wholesaler","Clinic or hospital"];
+  const b = S.profile.biz || {name:"", type:"Pharmacy", cac:""}, types = ["Pharmacy","Supermarket","Shop or kiosk","Distributor or wholesaler","Clinic or hospital"];
   const o = sheet(`<h2>Your business</h2>
-    <p class="small muted">A business account checks deliveries and keeps a stock record. Its scans are counted separately from shoppers' scans.</p>
-    <label class="field" for="bizName">Business name<input type="text" id="bizName" value="${esc(b.name)}" placeholder="Name on your signboard" maxlength="60"></label>
+    <p class="small muted">A business account checks deliveries and keeps a stock record. Its scans are counted separately from shoppers' scans. The plan is ${naira(PRICE.business)} a month after ${FREE_SCANS} free scans.</p>
+    <label class="field" for="bizName">Business name<input type="text" id="bizName" value="${esc(b.name)}" placeholder="Name on your CAC certificate" maxlength="60"></label>
+    <label class="field" for="bizCac">CAC registration number<input type="text" id="bizCac" class="mono" value="${esc(b.cac || "")}" placeholder="RC 1234567" maxlength="14" autocapitalize="characters">
+      <span class="small muted">The RC, BN or IT number on your CAC certificate. An inspector checks it when you get verified.</span></label>
     <label class="field" for="bizType">Type of business<select id="bizType">${types.map(t=>`<option ${t===b.type?"selected":""}>${t}</option>`).join("")}</select></label>
-    <p class="err" id="bizErr" hidden>Add your business name.</p>
+    <p class="err" id="bizErr" hidden></p>
     <button class="btn primary block" id="saveBiz">Save</button>
     <button class="btn ghost block" data-close>Cancel</button>`);
-  o.querySelector("#saveBiz").onclick = () => { const name = o.querySelector("#bizName").value.trim().slice(0,60);
-    if (!name){ o.querySelector("#bizErr").hidden = false; return; }
-    S.profile.biz = {name, type:o.querySelector("#bizType").value}; S.profile.accountType = "business"; saveProfile(); o.close(); S.tab = "scan"; render(); toast("Business account is on"); };
+  o.querySelector("#saveBiz").onclick = () => { const name = o.querySelector("#bizName").value.trim().slice(0,60), cac = cleanCac(o.querySelector("#bizCac").value), err = o.querySelector("#bizErr");
+    if (!name){ err.textContent = "Add your business name."; err.hidden = false; return; }
+    if (!cac){ err.textContent = "Enter the CAC number from your certificate: RC, BN or IT followed by the digits."; err.hidden = false; return; }
+    const changed = S.profile.biz && S.profile.biz.cac && S.profile.biz.cac !== cac;
+    S.profile.biz = Object.assign({}, S.profile.biz, {name, cac, type:o.querySelector("#bizType").value});
+    if (changed) S.profile.biz.verified = false;        // a different registration has to be checked again
+    S.profile.accountType = "business"; saveProfile(); o.close(); S.tab = "scan"; render(); toast("Business account is on"); };
+}
+
+/* ---------- business: getting Veriprod verified ---------- */
+const verState = () => { const b = S.profile.biz; return !b ? "none" : b.verified ? "verified" : b.inspection ? "booked" : "none"; };
+const SLOTS = {am:"morning, 9am to 12pm", pm:"afternoon, 12pm to 4pm"};
+const dayLabel = d => new Date(d + "T00:00").toLocaleDateString("en-NG", {weekday:"short", day:"numeric", month:"short"});
+const isoDay = t => { const d = new Date(t); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); };
+function verChip(){ const st = verState();
+  return st === "verified" ? '<span class="chip ok">Veriprod verified</span>' : st === "booked" ? '<span class="chip">Inspection booked</span>' : '<span class="chip warn">Not verified yet</span>'; }
+function verCard(){
+  const st = verState(), i = S.profile.biz && S.profile.biz.inspection;
+  if (st === "verified") return `<section class="card" id="verCard"><h3>Veriprod verified</h3><p>${verChip()}</p><p class="small muted">An inspector has checked your CAC registration, premises and stock.</p></section>`;
+  if (st === "booked") return `<section class="card" id="verCard"><h3>Veriprod verified</h3><p>${verChip()}</p>
+    <p class="small muted">An inspector visits on <b>${dayLabel(i.date)}</b> in the ${SLOTS[i.slot]}, at <b>${esc(i.address)}</b>. They will ask for ${esc(i.contact)}. Have your CAC certificate ready. Your badge shows here after the visit.</p>
+    <div class="row"><button class="btn ghost" data-inspect="open">Change the booking</button><button class="btn ghost" data-inspect="cancel">Cancel inspection</button></div></section>`;
+  return `<section class="card" id="verCard"><h3>Get Veriprod verified</h3><p>${verChip()}</p>
+    <p class="small muted">A Veriprod inspector visits your premises, checks your CAC certificate and scans a sample of your stock. Verified businesses carry a badge that shoppers and brands can trust.</p>
+    <button class="btn primary block" data-inspect="open">Schedule an inspection</button></section>`;
+}
+function openInspection(){
+  const b = S.profile.biz; if (!b) return;
+  const i = b.inspection || {}, min = isoDay(Date.now() + 2*DAY), h = here();
+  const o = sheet(`<h2>Schedule an inspection</h2>
+    <p class="small muted">Pick a day for a Veriprod inspector to visit <b>${esc(b.name)}</b> (CAC ${esc(b.cac)}). Visits run Monday to Saturday and take about an hour.</p>
+    <div class="row"><label class="field" for="insDate">Day<input type="date" id="insDate" min="${min}" value="${esc(i.date && i.date >= min ? i.date : "")}"></label>
+      <label class="field" for="insSlot">Time<select id="insSlot"><option value="am" ${i.slot==="pm"?"":"selected"}>Morning, 9am to 12pm</option><option value="pm" ${i.slot==="pm"?"selected":""}>Afternoon, 12pm to 4pm</option></select></label></div>
+    <label class="field" for="insAddr">Address of the premises<input type="text" id="insAddr" value="${esc(i.address || "")}" placeholder="Street, area and city${h && h.area ? " (you are in " + esc(cap(h.area)) + ")" : ""}" maxlength="140"></label>
+    <label class="field" for="insContact">Who should the inspector ask for?<input type="text" id="insContact" value="${esc(i.contact || "")}" placeholder="Full name" maxlength="60"></label>
+    <label class="field" for="insPhone">Phone number<input type="tel" id="insPhone" value="${esc(i.phone || "")}" placeholder="0801 234 5678" maxlength="17" inputmode="tel"></label>
+    <div><h3>What the inspector checks</h3></div>
+    <ul class="checks"><li><span class="dot p">1</span><span>Your CAC certificate matches the number on your account.</span></li>
+      <li><span class="dot p">2</span><span>The premises are where you say they are and are fit for the products you sell.</span></li>
+      <li><span class="dot p">3</span><span>A sample of your stock scans as genuine.</span></li></ul>
+    <p class="err" id="insErr" hidden></p>
+    <button class="btn primary block" id="saveIns">${b.inspection ? "Save the booking" : "Book the inspection"}</button>
+    <button class="btn ghost block" data-close>Cancel</button>`);
+  o.querySelector("#saveIns").onclick = () => {
+    const v = id => o.querySelector(id).value.trim(), err = o.querySelector("#insErr"), fail = m => { err.textContent = m; err.hidden = false; };
+    const date = v("#insDate"), address = v("#insAddr").slice(0,140), contact = v("#insContact").slice(0,60), phone = v("#insPhone").replace(/[^\d+]/g,"");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail("Pick a day for the visit.");
+    if (date < min) return fail("Pick a day from " + dayLabel(min) + " onwards, so an inspector can be assigned.");
+    if (new Date(date + "T00:00").getDay() === 0) return fail("Inspectors don't visit on Sundays. Pick another day.");
+    if (address.length < 8) return fail("Add the full address of the premises.");
+    if (!contact) return fail("Add the name of the person the inspector should ask for.");
+    if (phone.replace(/\D/g,"").length < 10) return fail("Add a phone number the inspector can reach.");
+    b.inspection = {date, slot:o.querySelector("#insSlot").value, address, contact, phone, bookedAt:Date.now()};
+    saveProfile(); o.close(); render(); toast("Inspection booked for " + dayLabel(date));
+  };
+}
+/* pinned above the tab bar for every business that is not verified yet */
+function renderNudge(){
+  let n = $("#nudge"); const bar = $("#tabs");
+  if (!n){ n = document.createElement("div"); n.id = "nudge"; bar.parentNode.insertBefore(n, bar); }
+  const st = isBiz() && S.tab !== "delivery" ? verState() : "verified", show = st !== "verified";
+  n.hidden = !show; document.body.classList.toggle("has-nudge", show);
+  if (!show){ n.innerHTML = ""; return; }
+  n.innerHTML = st === "booked" ? `<span><b>Inspection booked</b> for ${dayLabel(S.profile.biz.inspection.date)}. Your badge follows the visit.</span><button class="btn ghost" data-inspect="view">View</button>`
+    : `<span><b>Not verified yet.</b> Get the Veriprod verified badge.</span><button class="btn" data-inspect="open">Schedule an inspection</button>`;
 }
 /* a scanner in a sheet, for places that need one code back (the report form) */
 function openScanner(onCode){
@@ -904,12 +1017,13 @@ function shrink(file, maxW){ return new Promise(res => { const img = new Image()
   img.onerror = () => res(null); img.src = URL.createObjectURL(file); }); }
 
 /* ---------- render ---------- */
-const tabsFor = () => isBiz() ? [["scan","Stock","box"],["hotspots","Hotspots","hotspots"],["history","Deliveries","history"],["account","Account","account"]]
+const tabsFor = () => isBiz() ? [["scan","Stock","box"],["history","Deliveries","history"],["account","Account","account"]]
   : [["scan","Scan","scan"],["hotspots","Hotspots","hotspots"],["history","History","history"],["rewards","Rewards","rewards"],["account","Account","account"]];
 const CAM_TABS = ["scan","delivery"];
 function render(){
   if (hot){ hot.map.stop(); hot.map.remove(); hot = null; }
   if (S.camOn && !CAM_TABS.includes(S.tab)) stopCam();
+  if (isBiz() && (S.tab === "hotspots" || S.tab === "rewards")) S.tab = "scan";      // businesses have neither
   const map = {scan:vScan, result:vResult, delivery:vDelivery, deliveryDone:vDeliveryDone, hotspots:vHotspots, history:vHistory, rewards:vRewards, account:vAccount};
   $("#view").innerHTML = (map[S.tab] || vScan)();
   const active = ["result","delivery","deliveryDone"].includes(S.tab) ? "scan" : S.tab, tabs = tabsFor();
@@ -917,13 +1031,19 @@ function render(){
   bar.innerHTML = tabs.map(([k,l,ic]) => `<button data-tab="${k}" ${k===active?'aria-current="page"':""}>${ICON[ic]}<span>${l}</span></button>`).join("");
   if (S.camOn) attachCam();
   if (S.tab === "hotspots" && here()) initHot();
-  renderPlanChip();
+  renderPlanChip(); renderNudge();
 }
 function leaveDelivery(){ if (S.delivery && S.delivery.lines.length){ S.delivery = null; toast("Delivery cancelled. The scans stay in your history."); } else S.delivery = null; }
 
 document.addEventListener("click", e => {
   const t = e.target.closest("button"); if (!t) return;
-  if (t.dataset.tab){ if (S.tab === "delivery") leaveDelivery(); S.tab = t.dataset.tab; if (S.tab === "rewards" && isBiz()) S.tab = "scan"; render(); window.scrollTo(0,0); return; }
+  if (t.dataset.tab){ if (S.tab === "delivery") leaveDelivery(); S.tab = t.dataset.tab; render(); window.scrollTo(0,0); return; }
+  if (t.dataset.inspect){ const a = t.dataset.inspect;
+    if (a === "open") openInspection();
+    else if (a === "view"){ S.tab = "account"; render(); const c = $("#verCard"); if (c) c.scrollIntoView({block:"center"}); }
+    else if (a === "cancel" && S.profile.biz){ delete S.profile.biz.inspection; saveProfile(); render(); toast("Inspection cancelled"); }
+    return; }
+  if ((t.id === "camStart" || t.id === "delCam") && !canScan()){ openPaywall(); return; }
   if (t.id === "camStart"){ startCam({sel:"#camVideo", onCode:c => runScan(c,"qr"), onReady:() => { S.tab = "scan"; render(); }, onFail:render}); return; }
   if (t.id === "camStop" || t.id === "camPause"){ stopCam(); render(); return; }
   if (t.id === "scanAgain"){ S.tab = "scan"; S.doneDelivery = null; render(); window.scrollTo(0,0); return; }
@@ -942,12 +1062,12 @@ document.addEventListener("click", e => {
     if (l){ const top = t.closest(".overlay"); if (top) top.close(); openReport({prefill:{scanId:l.id, code:l.code, productName:l.name === "Unknown product" ? "" : l.name, seller:d.supplier}}); } return; }
   if (t.dataset.sort){ S.hotSort = t.dataset.sort; document.querySelectorAll("[data-sort]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.sort === S.hotSort))); updateHot(false); return; }
   if (t.dataset.hot && hot){ const c = hotList[+t.dataset.hot]; if (c){ hot.map.setView([c.lat,c.lng], 14, {animate:false}); $("#hotMap").scrollIntoView({block:"center", behavior:"smooth"}); } return; }
-  if (t.id === "cancelSub"){ S.profile.plan = "free"; saveProfile(); render(); toast("Subscription cancelled"); return; }
+  if (t.id === "cancelSub"){ S.profile[planKey()] = "free"; saveProfile(); render(); toast("Subscription cancelled"); return; }
   if (t.id === "resetData"){ const keep = {home:S.profile.home, locMode:S.profile.locMode, radiusMi:S.profile.radiusMi};
     S.profile = Object.assign(BLANK(), keep); S.myScans = []; S.myReports = []; S.reports = []; S.deliveries = []; S.delivery = null;
     saveScans(); lsSet("vp.myReports",[]); saveReports(); lsSet("vp.deliveries",[]); saveProfile(); S.tab = "account"; render(); toast("Your data on this app was reset"); return; }
   if (t.dataset.acct){
-    if (t.dataset.acct === "business" && !S.profile.biz){ openBizSetup(); return; }
+    if (t.dataset.acct === "business" && !(S.profile.biz && S.profile.biz.cac)){ openBizSetup(); return; }
     S.profile.accountType = t.dataset.acct; saveProfile(); render(); return; }
   if (t.dataset.redeem){ const P = S.profile; if (P.points < REDEEM_AT) return; P.points -= REDEEM_AT; P.redeemed.unshift({kind:t.dataset.redeem, amount:REDEEM_AT, at:Date.now()}); saveProfile(); render(); toast(`${naira(REDEEM_AT)} ${t.dataset.redeem.toLowerCase()} sent (simulated)`); return; }
   if (t.dataset.stock){ const r = S.result, rec = r && S.myScans.find(s=>s.id===r.id); if (!rec) return;
@@ -971,7 +1091,7 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("change", e => { if (e.target.id === "radius") saveProfile(); });
 
-if (S.profile.accountType === "business" && !S.profile.biz) S.profile.accountType = "individual";
+if (S.profile.accountType === "business" && !(S.profile.biz && S.profile.biz.cac)) S.profile.accountType = "individual";   // business accounts need a CAC number
 S.profile.radiusMi = Math.min(RADIUS_MAX, Math.max(RADIUS_MIN, +S.profile.radiusMi || RADIUS_DEFAULT));
 render();
 if (S.profile.locMode === "live") startLive(false);
