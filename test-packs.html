@@ -20,7 +20,10 @@
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
 .wrap{max-width:1000px;margin:0 auto;padding-block:28px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:22px}
-h1{font-family:var(--f-display);font-weight:800;font-size:2rem;line-height:1.1;margin:0;text-wrap:balance}
+h1,h2{font-family:var(--f-display);font-weight:800;line-height:1.1;margin:0;text-wrap:balance}
+h1{font-size:2rem} h2{font-size:1.25rem;margin-bottom:4px}
+#groups{display:flex;flex-direction:column;gap:34px}
+.group{display:flex;flex-direction:column;gap:14px}
 p{margin:0;max-width:65ch} .muted{color:var(--muted)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
 .pack{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;align-items:center;text-align:center;min-width:0}
@@ -38,9 +41,9 @@ button:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
   <header style="display:flex;flex-direction:column;gap:8px">
     <h1>Veriprod test packs</h1>
     <p><a href="./" style="color:var(--brand);font-weight:600">Open the Veriprod app</a></p>
-    <p class="muted">Example pack codes for testing the Veriprod app. Open this page on one screen and scan a code with the app on your phone, or type the code under it. Every brand and product here is made up.</p>
+    <p class="muted">Codes for testing the Veriprod app. Open this page on one screen and scan a code with the app on your phone, or type the code under it. A carton has one code for the whole carton and one for every item inside it. The brands and products are test data.</p>
   </header>
-  <div class="grid" id="grid"></div>
+  <div id="groups"></div>
 </div>
 <script src="vendor/qrcode-generator/qrcode.js"></script>
 <script>
@@ -50,32 +53,53 @@ function sig(body){ let h = 2166136261; const s = "veriprod-demo-key:" + body;
   for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
   let out=""; for (let i=0;i<4;i++){ out += ALPH[h % 32]; h = Math.floor(h/32) ^ (h<<7>>>0); h>>>=0; } return out; }
 const pretty = c => c.slice(0,4)+"-"+c.slice(4,8)+"-"+c.slice(8,12);
-const PACKS = [
-  {body:"KP7Q2M4X", name:"Paracetamol 500mg tablets, 96 pack", expect:"Genuine", cls:"good"},
-  {body:"LF3H8N2C", name:"Golden Start infant formula 400g", expect:"Genuine", cls:"good"},
-  {body:"ZD2K6W8P", name:"Malt Gold 330ml, 6 pack", expect:"Genuine", cls:"good"},
-  {body:"HB5T9R1D", name:"Shea butter body lotion 400ml", expect:"Genuine", cls:"good"},
-  {body:"HB1X7Y3E", name:"Shea butter body lotion 400ml", expect:"Likely clone (code copied)", cls:"bad"},
-  {body:"KP9V3L7A", name:"Paracetamol 500mg tablets, 96 pack", expect:"Fake (never activated)", cls:"bad"},
-  {code:"ZD9W4M7KQ8RT", name:"Unbranded malt drink", expect:"Fake (never issued)", cls:"bad"},
-  {body:"LF8M4Q6Z", name:"Golden Start infant formula 400g", expect:"Warning (recalled batch)", cls:"warn"},
-  {body:"KA4C8T2B", name:"Amoxicillin 500mg capsules, 21 pack", expect:"Warning (expired)", cls:"warn"}
-].map(p => Object.assign(p, {code: p.code || p.body + sig(p.body)}));
-const grid = document.getElementById("grid");
-PACKS.forEach((p, i) => {
-  const d = document.createElement("div"); d.className = "pack";
-  d.innerHTML = '<canvas width="330" height="330" aria-label="QR code for ' + pretty(p.code) + '"></canvas><div class="nm"></div><div class="code"></div><span class="chip ' + p.cls + '"></span><button type="button">Copy code</button>';
-  d.querySelector(".nm").textContent = p.name; d.querySelector(".code").textContent = pretty(p.code); d.querySelector(".chip").textContent = "Expect: " + p.expect;
-  const btn = d.querySelector("button");
-  btn.onclick = () => { const done = () => { btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy code", 1500); };
-    const fallback = () => { const r = document.createRange(); r.selectNodeContents(d.querySelector(".code")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected. Copy it now"; };
-    try { navigator.clipboard.writeText(p.code).then(done, fallback); } catch(e){ fallback(); } };
-  grid.appendChild(d);
-  if (typeof qrcode !== "function") return;
-  const q = qrcode(0, "M"); q.addData("VP1:" + p.code, "Alphanumeric"); q.make();
-  const cv = d.querySelector("canvas"), ctx = cv.getContext("2d"), n = q.getModuleCount(), cell = Math.floor(cv.width / (n + 8)), off = Math.floor((cv.width - cell*n)/2);
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,cv.width,cv.height); ctx.fillStyle = "#000";
-  for (let r=0;r<n;r++) for (let c=0;c<n;c++) if (q.isDark(r,c)) ctx.fillRect(off+c*cell, off+r*cell, cell, cell);
+const item = (prefix, i) => prefix + ALPH[Math.floor(i/32)] + ALPH[i%32];   // code body for item i of a pack
+const carton = prefix => prefix + "PK";                                      // code body for the whole pack
+const GROUPS = [
+  {title:"Paracetamol 500mg tablets, carton of 10 boxes", note:"A carton that is partly sold. A shop has it in stock, one box was scanned by a shopper, one was bought and two are in use.", packs:[
+    {body:carton("KP7Q2M"), name:"The whole carton", expect:"Genuine", cls:"good"},
+    {body:item("KP7Q2M",4), name:"Box 4, not scanned by a shopper yet", expect:"Genuine", cls:"good"},
+    {body:item("KP7Q2M",5), name:"Box 5, already bought by someone", expect:"Genuine, with a note", cls:"good"},
+    {body:item("KP7Q2M",1), name:"Box 1, already in use", expect:"Genuine, with a note", cls:"good"}]},
+  {title:"Golden Start infant formula 400g, carton of 12 tins", note:"A fresh carton that nobody has scanned. Good for trying a business delivery, then scanning tins as a shopper.", packs:[
+    {body:carton("LF3H8N"), name:"The whole carton", expect:"Genuine", cls:"good"},
+    {body:item("LF3H8N",1), name:"Tin 1", expect:"Genuine", cls:"good"},
+    {body:item("LF3H8N",2), name:"Tin 2", expect:"Genuine", cls:"good"}]},
+  {title:"Malt Gold 330ml, pack of 6 cans", note:"One can was scanned and one was bought.", packs:[
+    {body:carton("ZD2K6W"), name:"The whole pack", expect:"Genuine", cls:"good"},
+    {body:item("ZD2K6W",1), name:"Can 1", expect:"Genuine", cls:"good"}]},
+  {title:"Shea butter body lotion 400ml", note:"A bottle sold on its own, and a carton of 12 where the code on bottle 3 has been copied.", packs:[
+    {body:item("HB5T9R",1), name:"Single bottle", expect:"Genuine", cls:"good"},
+    {body:item("HB7X3E",3), name:"Bottle 3 of 12, code copied", expect:"Likely clone", cls:"bad"},
+    {body:item("HB7X3E",4), name:"Bottle 4 of 12", expect:"Genuine", cls:"good"}]},
+  {title:"Codes that should fail", note:"Fakes, a recalled batch and an expired batch.", packs:[
+    {body:item("KP9V3L",1), name:"Paracetamol 500mg tablets", expect:"Fake (never activated)", cls:"bad"},
+    {code:"ZD9W4M7KQ8RT", name:"Unbranded malt drink", expect:"Fake (never issued)", cls:"bad"},
+    {body:item("LF8M4Q",1), name:"Golden Start infant formula 400g", expect:"Warning (recalled batch)", cls:"warn"},
+    {body:item("KA4C8T",1), name:"Amoxicillin 500mg capsules", expect:"Warning (expired)", cls:"warn"}]}
+];
+const root = document.getElementById("groups");
+GROUPS.forEach(g => {
+  const sec = document.createElement("section"); sec.className = "group";
+  sec.innerHTML = '<div><h2></h2><p class="muted"></p></div><div class="grid"></div>';
+  sec.querySelector("h2").textContent = g.title; sec.querySelector("p").textContent = g.note;
+  const grid = sec.querySelector(".grid"); root.appendChild(sec);
+  g.packs.forEach(p => {
+    p.code = p.code || p.body + sig(p.body);
+    const d = document.createElement("div"); d.className = "pack";
+    d.innerHTML = '<canvas width="330" height="330" aria-label="QR code for ' + pretty(p.code) + '"></canvas><div class="nm"></div><div class="code"></div><span class="chip ' + p.cls + '"></span><button type="button">Copy code</button>';
+    d.querySelector(".nm").textContent = p.name; d.querySelector(".code").textContent = pretty(p.code); d.querySelector(".chip").textContent = "Expect: " + p.expect;
+    const btn = d.querySelector("button");
+    btn.onclick = () => { const done = () => { btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy code", 1500); };
+      const fallback = () => { const r = document.createRange(); r.selectNodeContents(d.querySelector(".code")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected. Copy it now"; };
+      try { navigator.clipboard.writeText(p.code).then(done, fallback); } catch(e){ fallback(); } };
+    grid.appendChild(d);
+    if (typeof qrcode !== "function") return;
+    const q = qrcode(0, "M"); q.addData("VP1:" + p.code, "Alphanumeric"); q.make();
+    const cv = d.querySelector("canvas"), ctx = cv.getContext("2d"), n = q.getModuleCount(), cell = Math.floor(cv.width / (n + 8)), off = Math.floor((cv.width - cell*n)/2);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0,0,cv.width,cv.height); ctx.fillStyle = "#000";
+    for (let r=0;r<n;r++) for (let c=0;c<n;c++) if (q.isDark(r,c)) ctx.fillRect(off+c*cell, off+r*cell, cell, cell);
+  });
 });
 })();
 </script>
