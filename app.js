@@ -157,26 +157,32 @@ let adI = 0; function rotateAd(){ const el = $("#adMsg"); el.style.opacity=0; se
 rotateAd(); setInterval(rotateAd, 7000);
 
 /* ---------- location: live when allowed, a chosen spot otherwise ---------- */
-let watchId = null, lastDrawn = null;
+let watchIds = [], lastDrawn = null, fineAt = 0;
 const here = () => S.loc || S.profile.home || null;
 const kmOf = mi => Math.min(RADIUS_MAX_KM, mi * KM_PER_MI);
 const radiusKm = () => kmOf(S.profile.radiusMi);
 const radiusLabel = mi => mi + " miles (" + Math.round(kmOf(mi)) + " km)";
+/* one position for a pin: try GPS first, then the quicker network position */
 function locate(){ return new Promise((res, rej) => {
   if (S.loc) return res({lat:S.loc.lat, lng:S.loc.lng});
   if (!navigator.geolocation) return rej(new Error("unsupported"));
-  const t = setTimeout(()=>rej(new Error("timeout")), 12000);
-  try { navigator.geolocation.getCurrentPosition(p => { clearTimeout(t); res({lat:p.coords.latitude, lng:p.coords.longitude}); },
-    e => { clearTimeout(t); rej(e); }, {enableHighAccuracy:true, timeout:11000, maximumAge:60000}); } catch(e){ clearTimeout(t); rej(e); }
+  const ok = p => res({lat:p.coords.latitude, lng:p.coords.longitude});
+  try { navigator.geolocation.getCurrentPosition(ok, e => { if (e && e.code === 1) return rej(e);
+      navigator.geolocation.getCurrentPosition(ok, rej, {enableHighAccuracy:false, timeout:12000, maximumAge:300000}); },
+    {enableHighAccuracy:true, timeout:9000, maximumAge:60000}); } catch(e){ rej(e); }
 }); }
 function setHome(lat,lng){ S.profile.home = {lat, lng, area: areaName(lat,lng)}; saveProfile(); }
-function stopLive(){ if (watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); watchId = null; S.loc = null; }
+function stopLive(){ if (navigator.geolocation) watchIds.forEach(id => navigator.geolocation.clearWatch(id)); watchIds = []; S.loc = null; }
+/* Two watchers run side by side: the network position arrives fast and works indoors,
+   GPS is slower but sharper and takes over when it has a fix. */
 function startLive(byUser){
-  if (!navigator.geolocation){ if (byUser){ toast("This phone can't share its location. Set your area on the map."); openHomePicker(); } return; }
-  if (watchId != null) return;
+  if (!navigator.geolocation){ if (byUser){ toast("This browser can't share its location. Set your area on the map."); openHomePicker(); } return; }
+  if (watchIds.length){ if (byUser) toast(S.loc ? "Live location is on: " + S.loc.area : "Still finding your location…"); return; }
   if (byUser) toast("Finding your location…");
-  let first = true;
-  watchId = navigator.geolocation.watchPosition(p => {
+  let first = true, dead = false; const failed = {};
+  const onPos = fine => p => {
+    if (dead) return;
+    if (fine) fineAt = Date.now(); else if (Date.now() - fineAt < 60000) return;
     const lat = p.coords.latitude, lng = p.coords.longitude;
     S.loc = {lat, lng, area: areaName(lat,lng), at: Date.now()};
     const h = S.profile.home;
@@ -185,14 +191,41 @@ function startLive(byUser){
     if (first || moved){ lastDrawn = {lat,lng}; onLocationChange(first); }
     if (first && byUser) toast("Live location on: " + S.loc.area);
     first = false;
-  }, err => {
+  };
+  const onErr = fine => err => {
+    if (dead) return;
     const denied = err && err.code === 1;
-    if (!denied && !first) return;                      // a passing glitch after a good fix: keep watching
-    stopLive();
+    if (!denied){ failed[fine] = true; if (!first || !(failed[true] && failed[false])) return; }   // wait for the other watcher, or keep going after a good fix
+    dead = true; stopLive();
     if (denied){ S.profile.locMode = S.profile.home ? "manual" : null; saveProfile(); }
-    if (byUser){ toast(err && err.code === 1 ? "Location is blocked for this site. Set your area on the map." : "Your location couldn't be found. Set your area on the map."); openHomePicker(); }
+    if (byUser){ if (denied) openLocationHelp(); else { toast("Your location couldn't be found. Check that Location is on in your phone's settings, or set your area on the map."); openHomePicker(); } }
     else if (!document.querySelector(".overlay") && !S.camOn) render();
-  }, {enableHighAccuracy:true, maximumAge:30000, timeout:20000});
+  };
+  fineAt = 0;
+  watchIds = [navigator.geolocation.watchPosition(onPos(false), onErr(false), {enableHighAccuracy:false, maximumAge:120000, timeout:25000}),
+              navigator.geolocation.watchPosition(onPos(true), onErr(true), {enableHighAccuracy:true, maximumAge:30000, timeout:25000})];
+}
+/* shown when the browser refuses: the app cannot ask again, so the person has to unblock it */
+function openLocationHelp(){
+  document.querySelectorAll(".overlay").forEach(x => x.close && x.close());
+  const ua = navigator.userAgent || "", ios = /iPhone|iPad|iPod/i.test(ua), android = /Android/i.test(ua);
+  const iosSteps = `<li><span class="dot p">1</span><span>Open your iPhone's <b>Settings</b>, then <b>Privacy &amp; Security</b>, then <b>Location Services</b>, and switch it on.</span></li>
+      <li><span class="dot p">2</span><span>In the same list tap <b>Safari Websites</b> (or the browser you use) and choose <b>While Using the App</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here, tap <b>Try again</b> and choose <b>Allow</b>.</span></li>`;
+  const androidSteps = `<li><span class="dot p">1</span><span>Swipe down from the top of your phone and switch <b>Location</b> on.</span></li>
+      <li><span class="dot p">2</span><span>Tap the icon at the left of the address bar, then <b>Permissions</b>, then <b>Location</b>, and choose <b>Allow</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here and tap <b>Try again</b>.</span></li>`;
+  const otherSteps = `<li><span class="dot p">1</span><span>Make sure Location is switched on for this device.</span></li>
+      <li><span class="dot p">2</span><span>Click the icon at the left of the address bar, find <b>Location</b> and set it to <b>Allow</b>.</span></li>
+      <li><span class="dot p">3</span><span>Come back here and choose <b>Try again</b>.</span></li>`;
+  const o = sheet(`<h2>Location is blocked</h2>
+    <p class="small muted">Your browser is not letting Veriprod see where you are. This happens when "Block" or "Don't allow" was chosen before, or when Location is switched off on the phone. Veriprod can't ask again until it is unblocked.</p>
+    <ul class="checks">${ios ? iosSteps : android ? androidSteps : otherSteps}</ul>
+    <p class="notice">Opened Veriprod from inside another app, such as WhatsApp or Instagram? Open it in Chrome or Safari instead. Browsers built into other apps often can't share location.</p>
+    <button class="btn primary block" id="locRetry">Try again</button>
+    <button class="btn ghost block" id="locManual">Set my area on the map instead</button>`);
+  o.querySelector("#locRetry").onclick = () => { o.close(); startLive(true); };
+  o.querySelector("#locManual").onclick = () => { o.close(); openHomePicker(); };
 }
 function onLocationChange(first){
   if (document.querySelector(".overlay") || S.camOn) return;
